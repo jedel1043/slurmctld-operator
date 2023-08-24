@@ -13,12 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Test slurmctld charm against other SLURM charms in the latest/edge channel."""
+"""Test slurmctld charm against other SLURM operators."""
 
 import asyncio
 import logging
-import pathlib
-from typing import Any, Coroutine
 
 import pytest
 import tenacity
@@ -32,36 +30,41 @@ SLURMD = "slurmd"
 SLURMDBD = "slurmdbd"
 DATABASE = "mysql"
 ROUTER = "mysql-router"
+UNIT_NAME = f"{SLURMCTLD}/0"
 
 
 @pytest.mark.abort_on_fail
 @pytest.mark.skip_if_deployed
 @pytest.mark.order(1)
 async def test_build_and_deploy_against_edge(
-    ops_test: OpsTest, slurmctld_charm: Coroutine[Any, Any, pathlib.Path], charm_base: str
+    ops_test: OpsTest, charm_base: str, slurmctld_charm, slurmd_charm, slurmdbd_charm
 ) -> None:
     """Test that the slurmctld charm can stabilize against slurmd, slurmdbd, and MySQL."""
     logger.info(f"Deploying {SLURMCTLD} against {SLURMD}, {SLURMDBD}, and {DATABASE}")
-    slurmd_res = get_slurmd_res()
+    # Pack charms and download NHC resource for the slurmd operator.
+    slurmctld, slurmd, slurmd_res, slurmdbd = await asyncio.gather(
+        slurmctld_charm, slurmd_charm, get_slurmd_res(), slurmdbd_charm
+    )
+    # Deploy the test Charmed SLURM cloud.
     await asyncio.gather(
         ops_test.model.deploy(
-            str(await slurmctld_charm),
+            str(slurmctld),
             application_name=SLURMCTLD,
             num_units=1,
             base=charm_base,
         ),
         ops_test.model.deploy(
-            SLURMD,
+            str(slurmd),
             application_name=SLURMD,
-            channel="edge",
+            channel="edge" if isinstance(slurmd, str) else None,
             num_units=1,
             resources=slurmd_res,
             base=charm_base,
         ),
         ops_test.model.deploy(
-            SLURMDBD,
+            str(slurmdbd),
             application_name=SLURMDBD,
-            channel="edge",
+            channel="edge" if isinstance(slurmdbd, str) else None,
             num_units=1,
             base=charm_base,
         ),
@@ -90,7 +93,7 @@ async def test_build_and_deploy_against_edge(
     # Reduce the update status frequency to accelerate the triggering of deferred events.
     async with ops_test.fast_forward():
         await ops_test.model.wait_for_idle(apps=[SLURMCTLD], status="active", timeout=1000)
-        assert ops_test.model.applications[SLURMCTLD].units[0].workload_status == "active"
+        assert ops_test.model.units.get(UNIT_NAME).workload_status == "active"
 
 
 @pytest.mark.abort_on_fail
@@ -103,7 +106,7 @@ async def test_build_and_deploy_against_edge(
 async def test_slurmctld_is_active(ops_test: OpsTest) -> None:
     """Test that slurmctld is active inside Juju unit."""
     logger.info("Checking that slurmctld is active inside Juju unit")
-    slurmctld_unit = ops_test.model.applications[SLURMCTLD].units[0]
+    slurmctld_unit = ops_test.model.units.get(UNIT_NAME)
     res = (await slurmctld_unit.ssh("systemctl is-active slurmctld")).strip("\n")
     assert res == "active"
 
@@ -118,7 +121,7 @@ async def test_slurmctld_is_active(ops_test: OpsTest) -> None:
 async def test_slurmctld_port_listen(ops_test: OpsTest) -> None:
     """Test that slurmctld is listening on port 6817."""
     logger.info("Checking that slurmctld is listening on port 6817")
-    slurmctld_unit = ops_test.model.applications[SLURMCTLD].units[0]
+    slurmctld_unit = ops_test.model.units.get(UNIT_NAME)
     res = await slurmctld_unit.ssh("sudo lsof -t -n -iTCP:6817 -sTCP:LISTEN")
     assert res != ""
 
@@ -133,6 +136,6 @@ async def test_slurmctld_port_listen(ops_test: OpsTest) -> None:
 async def test_munge_is_active(ops_test: OpsTest) -> None:
     """Test that munge is active inside Juju unit."""
     logger.info("Checking that munge is active inside Juju unit")
-    slurmctld_unit = ops_test.model.applications[SLURMCTLD].units[0]
+    slurmctld_unit = ops_test.model.units.get(UNIT_NAME)
     res = (await slurmctld_unit.ssh("systemctl is-active munge")).strip("\n")
     assert res == "active"
