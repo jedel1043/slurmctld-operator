@@ -1,4 +1,5 @@
 """Slurm Prolog and Epilog interface."""
+
 import json
 import logging
 
