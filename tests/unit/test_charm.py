@@ -32,6 +32,11 @@ class TestCharm(unittest.TestCase):
         self.addCleanup(self.harness.cleanup)
         self.harness.begin()
 
+    @patch("slurmctld_ops.SlurmctldManager.hostname", return_val="localhost")
+    def test_hostname(self, hostname) -> None:
+        """Test that the hostname property works."""
+        self.assertEqual(self.harness.charm.hostname, hostname)
+
     def test_cluster_name(self) -> None:
         """Test that the cluster_name property works."""
         self.assertEqual(self.harness.charm.cluster_name, "osd-cluster")
