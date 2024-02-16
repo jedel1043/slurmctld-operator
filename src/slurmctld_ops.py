@@ -1,3 +1,5 @@
+# Copyright 2024 Omnivector, LLC.
+# See LICENSE file for licensing details.
 """This module provides the SlurmManager."""
 
 import logging
