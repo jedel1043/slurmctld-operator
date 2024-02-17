@@ -32,15 +32,10 @@ class TestCharm(unittest.TestCase):
         self.addCleanup(self.harness.cleanup)
         self.harness.begin()
 
-    @patch("slurm_ops_manager.SlurmManager.hostname", return_val="localhost")
+    @patch("slurmctld_ops.SlurmctldManager.hostname", return_val="localhost")
     def test_hostname(self, hostname) -> None:
         """Test that the hostname property works."""
         self.assertEqual(self.harness.charm.hostname, hostname)
-
-    @patch("slurm_ops_manager.SlurmManager.port", return_val=12345)
-    def test_port(self, port) -> None:
-        """Test that the port property works."""
-        self.assertEqual(self.harness.charm.port, port)
 
     def test_cluster_name(self) -> None:
         """Test that the cluster_name property works."""
@@ -163,7 +158,7 @@ class TestCharm(unittest.TestCase):
             res, False, msg="_check_status returned value True instead of expected value False."
         )
 
-    @patch("slurm_ops_manager.SlurmManager.check_munged", return_value=False)
+    @patch("slurmctld_ops.SlurmctldManager.check_munged", return_value=False)
     def test_check_status_bad_munge(self, _) -> None:
         """Test that the check_status method works when munge encounters an error."""
         setattr(self.harness.charm._stored, "slurm_installed", True)  # Patch StoredState

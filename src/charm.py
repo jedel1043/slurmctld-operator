@@ -24,7 +24,7 @@ from ops.charm import CharmBase, LeaderElectedEvent
 from ops.framework import StoredState
 from ops.main import main
 from ops.model import ActiveStatus, BlockedStatus, WaitingStatus
-from slurm_ops_manager import SlurmManager
+from slurmctld_ops import SlurmctldManager
 
 logger = logging.getLogger()
 
@@ -48,7 +48,7 @@ class SlurmctldCharm(CharmBase):
             down_nodes=[],
         )
 
-        self._slurm_manager = SlurmManager(self, "slurmctld")
+        self._slurm_manager = SlurmctldManager(self, "slurmctld")
 
         self._slurmd = Slurmd(self, "slurmd")
         self._slurmdbd = Slurmdbd(self, "slurmdbd")
@@ -219,17 +219,16 @@ class SlurmctldCharm(CharmBase):
 
     def _on_show_current_config(self, event):
         """Show current slurm.conf."""
-        slurm_conf = self._slurm_manager.get_slurm_conf()
+        slurm_conf = self._slurm_manager.slurm_conf_path.read_text()
         event.set_results({"slurm.conf": slurm_conf})
 
     def _on_install(self, event):
         """Perform installation operations for slurmctld."""
-        self.unit.set_workload_version(Path("version").read_text().strip())
-
         self.unit.status = WaitingStatus("Installing slurmctld")
 
-        custom_repo = self.config.get("custom-slurm-repo")
-        successful_installation = self._slurm_manager.install(custom_repo)
+        successful_installation = self._slurm_manager.install()
+
+        self.unit.set_workload_version(self._slurm_manager.version())
 
         if successful_installation:
             self._stored.slurm_installed = True
@@ -243,7 +242,7 @@ class SlurmctldCharm(CharmBase):
                 #      peer relation.
                 self._stored.jwt_rsa = self._slurm_manager.generate_jwt_rsa()
                 self._stored.munge_key = self._slurm_manager.get_munge_key()
-                self._slurm_manager.configure_jwt_rsa(self.get_jwt_rsa())
+                self._slurm_manager.write_jwt_rsa(self.get_jwt_rsa())
             else:
                 # NOTE: the secondary slurmctld should get the jwt and munge
                 #       keys from the peer relation here
@@ -420,12 +419,6 @@ class SlurmctldCharm(CharmBase):
             event.defer()
             return
 
-        if self._stored.slurmrestd_available:
-            self._slurmrestd.set_slurm_config_on_app_relation_data(
-                slurm_config,
-            )
-            self._slurmrestd.restart_slurmrestd()
-
     def _on_slurmdbd_available(self, event):
         self._set_slurmdbd_available(True)
         self._on_write_slurm_config(event)
@@ -451,7 +444,7 @@ class SlurmctldCharm(CharmBase):
             self._slurm_manager.render_slurm_configs(slurm_config)
 
             # restart is needed if nodes are added/removed from the cluster
-            self._slurm_manager.slurm_systemctl("restart")
+            self._slurm_manager.restart_slurmctld()
             self._slurm_manager.slurm_cmd("scontrol", "reconfigure")
 
             # send the custom NHC parameters to all slurmd
