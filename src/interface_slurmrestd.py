@@ -1,10 +1,15 @@
-#!/usr/bin/env python3
-"""SlurmrestdProvides."""
-import json
-import logging
-import uuid
+"""Slurmctld interface to slurmrestd."""
 
-from ops.framework import EventBase, EventSource, Object, ObjectEvents
+import logging
+
+from ops import (
+    EventBase,
+    EventSource,
+    Object,
+    ObjectEvents,
+    RelationBrokenEvent,
+    RelationCreatedEvent,
+)
 
 logger = logging.getLogger()
 
@@ -13,21 +18,21 @@ class SlurmrestdAvailableEvent(EventBase):
     """Emitted when slurmrestd is available."""
 
 
-class SlurmrestdUnAvailableEvent(EventBase):
+class SlurmrestdUnavailableEvent(EventBase):
     """Emitted when the slurmrestd relation is broken."""
 
 
-class SlurmrestdEvents(ObjectEvents):
-    """SlurmrestdEvents."""
+class Events(ObjectEvents):
+    """Slurmrestd interface events."""
 
     slurmrestd_available = EventSource(SlurmrestdAvailableEvent)
-    slurmrestd_unavailable = EventSource(SlurmrestdUnAvailableEvent)
+    slurmrestd_unavailable = EventSource(SlurmrestdUnavailableEvent)
 
 
 class Slurmrestd(Object):
     """Slurmrestd interface."""
 
-    on = SlurmrestdEvents()
+    on = Events()  # pyright: ignore [reportIncompatibleMethodOverride, reportAssignmentType]
 
     def __init__(self, charm, relation_name):
         """Set the initial data."""
@@ -44,22 +49,14 @@ class Slurmrestd(Object):
         )
 
     @property
-    def is_joined(self):
+    def is_joined(self) -> bool:
         """Return True if relation is joined."""
-        if self._charm.framework.model.relations.get(self._relation_name):
-            return True
-        else:
-            return False
+        return True if self.model.relations.get(self._relation_name) else False
 
-    def _on_relation_created(self, event):
+    def _on_relation_created(self, event: RelationCreatedEvent) -> None:
         # Check that slurm has been installed so that we know the munge key is
         # available. Defer if slurm has not been installed yet.
-        if not self._charm.is_slurm_installed():
-            event.defer()
-            return
-
-        # make sure slurmdbd started before sending signal to slurmrestd
-        if not self._charm.slurmdbd_info:
+        if not self._charm.slurm_installed:
             event.defer()
             return
 
@@ -67,15 +64,12 @@ class Slurmrestd(Object):
         # data on the relation to be retrieved on the other side by slurmdbd.
         app_relation_data = event.relation.data[self.model.app]
         app_relation_data["munge_key"] = self._charm.get_munge_key()
-        app_relation_data["jwt_rsa"] = self._charm.get_jwt_rsa()
-        self._charm.set_slurmrestd_available(True)
         self.on.slurmrestd_available.emit()
 
-    def _on_relation_broken(self, event):
-        self._charm.set_slurmrestd_available(False)
+    def _on_relation_broken(self, event: RelationBrokenEvent) -> None:
         self.on.slurmrestd_unavailable.emit()
 
-    def set_slurm_config_on_app_relation_data(self, slurm_config):
+    def set_slurm_config_on_app_relation_data(self, slurm_config: str) -> None:
         """Set the slurm_conifg to the app data on the relation.
 
         Setting data on the relation forces the units of related applications
@@ -85,11 +79,4 @@ class Slurmrestd(Object):
         relations = self._charm.framework.model.relations.get(self._relation_name)
         for relation in relations:
             app_relation_data = relation.data[self.model.app]
-            app_relation_data["slurm_config"] = json.dumps(slurm_config)
-
-    def restart_slurmrestd(self):
-        """Send a restart signal to related slurmd applications."""
-        relations = self._charm.framework.model.relations.get(self._relation_name)
-        for relation in relations:
-            app_relation_data = relation.data[self.model.app]
-            app_relation_data["restart_slurmrestd_uuid"] = str(uuid.uuid4())
+            app_relation_data["slurm_conf"] = slurm_config

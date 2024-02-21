@@ -24,13 +24,7 @@ This operator should be used with Juju 3.x or greater.
 ```shell
 $ juju deploy slurmctld --channel edge
 $ juju deploy slurmd --channel edge
-$ juju deploy slurmdbd --channel edge
-$ juju deploy mysql --channel 8.0/edge
-$ juju deploy mysql-router slurmdbd-mysql-router --channel dpe/edge
-$ juju integrate slurmctld:slurmd slurmd:slurmd
-$ juju integrate slurmdbd-mysql-router:backend-database mysql:database
-$ juju integrate slurmdbd:database slurmdbd-mysql-router:database
-$ juju integrate slurmctld:slurmdbd slurmdbd:slurmdbd
+$ juju integrate slurmctld:slurmd slurmd:slurmctld
 ```
 
 ## Project & Community
