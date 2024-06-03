@@ -12,9 +12,6 @@ from pathlib import Path
 from typing import List
 
 from charms.fluentbit.v0.fluentbit import FluentbitClient
-from interface_elasticsearch import Elasticsearch
-from interface_grafana_source import GrafanaSource
-from interface_influxdb import InfluxDB
 from interface_prolog_epilog import PrologEpilog
 from interface_slurmctld_peer import SlurmctldPeer
 from interface_slurmd import Slurmd
@@ -55,10 +52,6 @@ class SlurmctldCharm(CharmBase):
         self._slurmrestd = Slurmrestd(self, "slurmrestd")
         self._slurmctld_peer = SlurmctldPeer(self, "slurmctld-peer")
         self._prolog_epilog = PrologEpilog(self, "prolog-epilog")
-
-        self._grafana = GrafanaSource(self, "grafana-source")
-        self._influxdb = InfluxDB(self, "influxdb-api")
-        self._elasticsearch = Elasticsearch(self, "elasticsearch")
         self._fluentbit = FluentbitClient(self, "fluentbit")
 
         event_handler_bindings = {
@@ -82,16 +75,10 @@ class SlurmctldCharm(CharmBase):
             # Addons lifecycle events
             self._prolog_epilog.on.prolog_epilog_available: self._on_write_slurm_config,
             self._prolog_epilog.on.prolog_epilog_unavailable: self._on_write_slurm_config,
-            self._grafana.on.grafana_available: self._on_grafana_available,
-            self._influxdb.on.influxdb_available: self._on_influxdb_available,
-            self._influxdb.on.influxdb_unavailable: self._on_write_slurm_config,
-            self._elasticsearch.on.elasticsearch_available: self._on_elasticsearch_available,
-            self._elasticsearch.on.elasticsearch_unavailable: self._on_write_slurm_config,
             # actions
             self.on.show_current_config_action: self._on_show_current_config,
             self.on.drain_action: self._drain_nodes_action,
             self.on.resume_action: self._resume_nodes_action,
-            self.on.influxdb_info_action: self._infludb_info_action,
         }
         for event, handler in event_handler_bindings.items():
             self.framework.observe(event, handler)
@@ -146,7 +133,6 @@ class SlurmctldCharm(CharmBase):
         return {
             **self._assemble_prolog_epilog(),
             **self._assemble_acct_gather_addon(),
-            **self._assemble_elastic_search_addon(),
         }
 
     def _assemble_prolog_epilog(self) -> dict:
@@ -163,16 +149,8 @@ class SlurmctldCharm(CharmBase):
     def _assemble_acct_gather_addon(self):
         """Generate the acct gather section of the addons."""
         logger.debug("## Generating acct gather configuration")
-
         addons = {}
-
-        influxdb_info = self._get_influxdb_info()
-        if influxdb_info:
-            addons["acct_gather"] = influxdb_info
-            addons["acct_gather"]["default"] = "all"
-            addons["acct_gather_profile"] = "acct_gather_profile/influxdb"
-
-        # it is possible to setup influxdb or hdf5 profiles without the
+        # it is possible to setup hdf5 profiles without the
         # relation, using the custom-config section of slurm.conf. We need to
         # support setting up the acct_gather configuration for this scenario
         acct_gather_custom = self.config.get("acct-gather-custom")
@@ -185,18 +163,6 @@ class SlurmctldCharm(CharmBase):
         addons["acct_gather_frequency"] = self.config.get("acct-gather-frequency")
 
         return addons
-
-    def _assemble_elastic_search_addon(self):
-        """Generate the acct gather section of the addons."""
-        logger.debug("## Generating elastic search addon configuration")
-        addon = {}
-
-        elasticsearch_ingress = self._elasticsearch.elasticsearch_ingress
-        if elasticsearch_ingress:
-            suffix = f"/{self.cluster_name}/jobcomp"
-            addon = {"elasticsearch_address": f"{elasticsearch_ingress}{suffix}"}
-
-        return addon
 
     def set_slurmd_available(self, flag: bool):
         """Set stored value of slurmd available."""
@@ -508,30 +474,6 @@ class SlurmctldCharm(CharmBase):
         update_cmd = f"update nodename={nodes} state=resume"
         self._slurm_manager.slurm_cmd("scontrol", update_cmd)
 
-    def _on_grafana_available(self, event):
-        """Create the grafana-source if we are the leader and have influxdb."""
-        if not self._is_leader():
-            return
-
-        influxdb_info = self._get_influxdb_info()
-
-        if influxdb_info:
-            self._grafana.set_grafana_source_info(influxdb_info)
-        else:
-            logger.error("## Can not set Grafana source: missing influxdb relation")
-
-    def _on_influxdb_available(self, event):
-        """Assemble addons to forward slurm data to influxdb."""
-        self._on_write_slurm_config(event)
-
-    def _on_elasticsearch_available(self, event):
-        """Assemble addons to forward Slurm data to elasticsearch."""
-        self._on_write_slurm_config(event)
-
-    def _get_influxdb_info(self) -> dict:
-        """Return influxdb info."""
-        return self._influxdb.get_influxdb_info()
-
     def _drain_nodes_action(self, event):
         """Drain specified nodes."""
         nodes = event.params["nodename"]
@@ -560,18 +502,6 @@ class SlurmctldCharm(CharmBase):
             event.set_results({"status": "resuming", "nodes": nodes})
         except subprocess.CalledProcessError as e:
             event.fail(message=f"Error resuming {nodes}: {e.output}")
-
-    def _infludb_info_action(self, event):
-        influxdb_info = self._get_influxdb_info()
-
-        if not influxdb_info:
-            info = "not related"
-        else:
-            # Juju does not like underscores in dictionaries
-            info = {k.replace("_", "-"): v for k, v in influxdb_info.items()}
-
-        logger.debug(f"## InfluxDB-info action: {influxdb_info}")
-        event.set_results({"influxdb": info})
 
 
 if __name__ == "__main__":
