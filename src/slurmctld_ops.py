@@ -138,6 +138,13 @@ class SlurmctldManager:
             return False
         systemd.service_stop("munge")
 
+        spool_dir = Path("/var/spool/slurmctld")
+        if not spool_dir.exists():
+            spool_dir.mkdir()
+
+        slurm_user_uid, slurm_group_gid = _get_slurm_user_uid_and_slurm_group_gid()
+        os.chown(f"{spool_dir}", slurm_user_uid, slurm_group_gid)
+
         return True
 
     def version(self) -> str:

@@ -8,7 +8,7 @@ SLURM_USER = "slurm"
 SLURM_GROUP = "slurm"
 
 CHARM_MAINTAINED_SLURM_CONF_PARAMETERS = {
-    "AuthAltParameters": "jwt_key=/var/spool/slurmctldjwt_hs256.key",
+    "AuthAltParameters": "jwt_key=/var/spool/slurmctld/jwt_hs256.key",
     "AuthAltTypes": "auth/jwt",
     "AuthInfo": "/var/run/munge/munge.socket.2",
     "AuthType": "auth/munge",
@@ -33,37 +33,6 @@ CHARM_MAINTAINED_SLURM_CONF_PARAMETERS = {
     "SlurmdUser": "root",
     "RebootProgram": '"/usr/sbin/reboot --reboot"',
 }
-
-
-FLUENTBIT_CONFIG = [
-    {
-        "input": [
-            ("name", "tail"),
-            ("path", "/var/log/slurm/slurmctld.log"),
-            ("path_key", "filename"),
-            ("tag", "slurmctld"),
-            ("parser", "slurm"),
-        ]
-    },
-    {
-        "parser": [
-            ("name", "slurm"),
-            ("format", "regex"),
-            ("regex", r"^\[(?<time>[^\]]*)\] (?<log>.*)$"),
-            ("time_key", "time"),
-            ("time_format", "%Y-%m-%dT%H:%M:%S.%L"),
-        ]
-    },
-    {
-        "filter": [
-            ("name", "record_modifier"),
-            ("match", "slurmctld"),
-            ("record", "hostname ${HOSTNAME}"),
-            ("record", "service slurmctld"),
-        ]
-    },
-]
-
 
 UBUNTU_HPC_PPA_KEY = """
 -----BEGIN PGP PUBLIC KEY BLOCK-----
