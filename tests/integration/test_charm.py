@@ -20,7 +20,6 @@ import logging
 
 import pytest
 import tenacity
-from helpers import get_slurmd_res
 from pytest_operator.plugin import OpsTest
 
 logger = logging.getLogger(__name__)
@@ -42,8 +41,8 @@ async def test_build_and_deploy_against_edge(
     """Test that the slurmctld charm can stabilize against slurmd, slurmdbd, and MySQL."""
     logger.info(f"Deploying {SLURMCTLD} against {SLURMD}, {SLURMDBD}, and {DATABASE}")
     # Pack charms and download NHC resource for the slurmd operator.
-    slurmctld, slurmd, slurmd_res, slurmdbd = await asyncio.gather(
-        slurmctld_charm, slurmd_charm, get_slurmd_res(), slurmdbd_charm
+    slurmctld, slurmd, slurmdbd = await asyncio.gather(
+        slurmctld_charm, slurmd_charm, slurmdbd_charm
     )
     # Deploy the test Charmed SLURM cloud.
     await asyncio.gather(
@@ -58,7 +57,6 @@ async def test_build_and_deploy_against_edge(
             application_name=SLURMD,
             channel="edge" if isinstance(slurmd, str) else None,
             num_units=1,
-            resources=slurmd_res,
             base=charm_base,
         ),
         ops_test.model.deploy(
@@ -83,11 +81,9 @@ async def test_build_and_deploy_against_edge(
             base="ubuntu@22.04",
         ),
     )
-    # Attach resources to charms.
-    await ops_test.juju("attach-resource", SLURMD, f"nhc={slurmd_res['nhc']}")
     # Set integrations for charmed applications.
-    await ops_test.model.integrate(f"{SLURMCTLD}:{SLURMD}", f"{SLURMD}:{SLURMD}")
-    await ops_test.model.integrate(f"{SLURMCTLD}:{SLURMDBD}", f"{SLURMDBD}:{SLURMDBD}")
+    await ops_test.model.integrate(f"{SLURMCTLD}:{SLURMD}", f"{SLURMD}:{SLURMCTLD}")
+    await ops_test.model.integrate(f"{SLURMCTLD}:{SLURMDBD}", f"{SLURMDBD}:{SLURMCTLD}")
     await ops_test.model.integrate(f"{SLURMDBD}-{ROUTER}:backend-database", f"{DATABASE}:database")
     await ops_test.model.integrate(f"{SLURMDBD}:database", f"{SLURMDBD}-{ROUTER}:database")
     # Reduce the update status frequency to accelerate the triggering of deferred events.

@@ -1,23 +1,44 @@
-#!/usr/bin/env python3
-"""Slurmdbd."""
+"""Slurmctld interface to slurmdbd."""
+
 import json
 import logging
 
-from ops.framework import EventBase, EventSource, Object, ObjectEvents
+from ops import (
+    EventBase,
+    EventSource,
+    Object,
+    ObjectEvents,
+    RelationBrokenEvent,
+    RelationChangedEvent,
+    RelationCreatedEvent,
+)
 
 logger = logging.getLogger()
 
 
 class SlurmdbdAvailableEvent(EventBase):
-    """Emits slurmdbd_available."""
+    """Emitted when slurmctld is available."""
+
+    def __init__(self, handle, slurmdbd_host):
+        super().__init__(handle)
+
+        self.slurmdbd_host = slurmdbd_host
+
+    def snapshot(self):
+        """Snapshot the event data."""
+        return {"slurmdbd_host": self.slurmdbd_host}
+
+    def restore(self, snapshot):
+        """Restore the snapshot of the event data."""
+        self.slurmdbd_host = snapshot.get("slurmdbd_host")
 
 
 class SlurmdbdUnavailableEvent(EventBase):
     """Emits slurmdbd_unavailable."""
 
 
-class SlurmdbdAvailableEvents(ObjectEvents):
-    """SlurmdbdAvailableEvents."""
+class Events(ObjectEvents):
+    """Slurmdbd interface events."""
 
     slurmdbd_available = EventSource(SlurmdbdAvailableEvent)
     slurmdbd_unavailable = EventSource(SlurmdbdUnavailableEvent)
@@ -26,7 +47,7 @@ class SlurmdbdAvailableEvents(ObjectEvents):
 class Slurmdbd(Object):
     """Facilitate slurmdbd lifecycle events."""
 
-    on = SlurmdbdAvailableEvents()
+    on = Events()  # pyright: ignore [reportIncompatibleMethodOverride, reportAssignmentType]
 
     def __init__(self, charm, relation_name):
         """Set the initial attribute values for this interface."""
@@ -46,79 +67,44 @@ class Slurmdbd(Object):
         )
 
         self.framework.observe(
-            self._charm.on[self._relation_name].relation_departed,
-            self._on_relation_departed,
-        )
-
-        self.framework.observe(
             self._charm.on[self._relation_name].relation_broken,
             self._on_relation_broken,
         )
 
-    def _on_relation_created(self, event):
+    def _on_relation_created(self, event: RelationCreatedEvent) -> None:
         """Perform relation-created event operations."""
         # Check that slurm has been installed so that we know the munge key is
         # available. Defer if slurm has not been installed yet.
-        if not self._charm.is_slurm_installed():
+        if not self._charm.slurm_installed:
             event.defer()
             return
 
-        # Get the munge_key and set it to the application relation data,
-        # to be retrieved on the other side by slurmdbd.
-        munge_key = self._charm.get_munge_key()
-        event.relation.data[self.model.app]["munge_key"] = munge_key
+        try:
+            event.relation.data[self.model.app]["cluster_info"] = json.dumps(
+                {
+                    "munge_key": self._charm.get_munge_key(),
+                    "jwt_rsa": self._charm.get_jwt_rsa(),
+                }
+            )
+        except json.JSONDecodeError as e:
+            logger.error(e)
+            raise (e)
 
-        # Get the jwt_rsa key from the slurm_ops_manager and set it to the app
-        # data on the relation to be retrieved on the other side by slurmdbd.
-        jwt_rsa = self._charm.get_jwt_rsa()
-        event.relation.data[self.model.app]["jwt_rsa"] = jwt_rsa
-
-        event.relation.data[self.model.app]["cluster-name"] = self._charm.config.get(
-            "cluster-name"
-        )
-
-    def _on_relation_changed(self, event):
-        event_app_data = event.relation.data.get(event.app)
-        if event_app_data:
-            slurmdbd_info = event_app_data.get("slurmdbd_info")
-            if slurmdbd_info:
-                self.on.slurmdbd_available.emit()
+    def _on_relation_changed(self, event: RelationChangedEvent) -> None:
+        """Retrieve the slurmdbd_host from the relation and emit slurmdbd_available."""
+        if event.app and event.unit:
+            if event_app_data := event.relation.data.get(event.app):
+                if slurmdbd_host := event_app_data.get("slurmdbd_host"):
+                    self.on.slurmdbd_available.emit(slurmdbd_host)
+                else:
+                    logger.debug("'slurmdbd_host' data does not exist on relation.")
+                    event.defer()
             else:
+                logger.debug("Application does not exist on relation.")
                 event.defer()
-        else:
-            event.defer()
 
-    def _on_relation_departed(self, event):
-        self.on.slurmdbd_unavailable.emit()
-
-    def _on_relation_broken(self, event):
+    def _on_relation_broken(self, event: RelationBrokenEvent) -> None:
+        """Clear the relation data on the application."""
         if self.framework.model.unit.is_leader():
-            event.relation.data[self.model.app]["munge_key"] = ""
-            event.relation.data[self.model.app]["jwt_rsa"] = ""
+            event.relation.data[self.model.app]["cluster_info"] = ""
         self.on.slurmdbd_unavailable.emit()
-
-    @property
-    def _relation(self):
-        return self.framework.model.get_relation(self._relation_name)
-
-    @property
-    def is_joined(self):
-        """Return True if the relation to slurmdbd exists."""
-        if self._charm.framework.model.relations.get(self._relation_name):
-            return True
-        else:
-            return False
-
-    def get_slurmdbd_info(self):
-        """Return the slurmdbd_info."""
-        relation = self._relation
-        # NOTE: clean up these dangling statements
-        if relation:
-            app = relation.app
-            if app:
-                app_data = relation.data.get(app)
-                if app_data:
-                    slurmdbd_info = app_data.get("slurmdbd_info")
-                    if slurmdbd_info:
-                        return json.loads(slurmdbd_info)
-        return None

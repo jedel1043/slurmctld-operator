@@ -1,39 +1,54 @@
-#!/usr/bin/env python3
-"""Interface slurmd."""
-import copy
+"""Slurmctld interface to slurmd."""
+
 import json
 import logging
+from typing import Any, Dict
 
-from ops.framework import EventBase, EventSource, Object, ObjectEvents, StoredState
+from ops import (
+    EventBase,
+    EventSource,
+    Object,
+    ObjectEvents,
+    Relation,
+    RelationBrokenEvent,
+    RelationChangedEvent,
+    RelationCreatedEvent,
+    RelationDepartedEvent,
+    Unit,
+)
 
 logger = logging.getLogger()
 
 
+class PartitionAvailableEvent(EventBase):
+    """Emitted when slurmd application partition data is available on the relation."""
+
+
+class PartitionUnavailableEvent(EventBase):
+    """Emitted when a slurmd application integration is broken."""
+
+
 class SlurmdAvailableEvent(EventBase):
-    """Emitted when slurmd is available."""
-
-
-class SlurmdBrokenEvent(EventBase):
-    """Emitted when the slurmd relation is broken."""
+    """Emitted when the slurmd unit joins the relation."""
 
 
 class SlurmdDepartedEvent(EventBase):
     """Emitted when one slurmd departs."""
 
 
-class SlurmdInventoryEvents(ObjectEvents):
-    """SlurmClusterProviderRelationEvents."""
+class Events(ObjectEvents):
+    """Slurmd interface events."""
 
+    partition_available = EventSource(PartitionAvailableEvent)
+    partition_unavailable = EventSource(PartitionUnavailableEvent)
     slurmd_available = EventSource(SlurmdAvailableEvent)
-    slurmd_unavailable = EventSource(SlurmdBrokenEvent)
     slurmd_departed = EventSource(SlurmdDepartedEvent)
 
 
 class Slurmd(Object):
     """Slurmd inventory interface."""
 
-    on = SlurmdInventoryEvents()
-    _state = StoredState()
+    on = Events()  # pyright: ignore [reportIncompatibleMethodOverride, reportAssignmentType]
 
     def __init__(self, charm, relation_name):
         """Set self._relation_name and self.charm."""
@@ -58,143 +73,175 @@ class Slurmd(Object):
             self._on_relation_broken,
         )
 
-    def _on_relation_created(self, event):
+    def _on_relation_created(self, event: RelationCreatedEvent) -> None:
         """Set our data on the relation."""
-        # Check that slurm has been installed so that we know the munge key is
-        # available. Defer if slurm has not been installed yet.
-        if not self._charm.is_slurm_installed():
+        # Need to wait until the charm has installed slurm before we can proceed.
+        if not self._charm.slurm_installed:
             event.defer()
             return
 
-        # Get the munge_key and set it to the app data on the relation to be
-        # retrieved on the other side by slurmd.
-        app_relation_data = event.relation.data[self.model.app]
-        app_relation_data["munge_key"] = self._charm.get_munge_key()
+        health_check_params = (
+            self._charm.config.get("health-check-params")
+            if len(self._charm.config.get("health-check-params")) > 0
+            else "#"
+        )
+        event.relation.data[self.model.app]["cluster_info"] = json.dumps(
+            {
+                "munge_key": self._charm.get_munge_key(),
+                "slurmctld_host": self._charm.hostname,
+                "cluster_name": self._charm.cluster_name,
+                "nhc_params": health_check_params,
+            }
+        )
 
-        # send the hostname and port to enable configless mode
-        app_relation_data["slurmctld_host"] = self._charm.hostname
-        app_relation_data["slurmctld_port"] = self._charm.port
-
-        app_relation_data["cluster_name"] = self._charm.config.get("cluster-name")
-        app_relation_data["nhc_params"] = self._charm.config.get("health-check-params", "#")
-
-    def _on_relation_changed(self, event):
-        """Emit slurmd available event."""
-        if event.relation.data[event.app].get("partition_info"):
-            self._charm.set_slurmd_available(True)
-            self.on.slurmd_available.emit()
+    def _on_relation_changed(self, event: RelationChangedEvent) -> None:
+        """Emit slurmd available event and conditionally update new_nodes."""
+        if app := event.app:
+            app_data = event.relation.data[app]
+            if not app_data.get("partition"):
+                logger.debug("No partition on relation.")
+                event.defer()
+                return
         else:
+            logger.debug("No application on relation.")
             event.defer()
+            return
 
-    def _on_relation_departed(self, event):
+        # The event.unit data isn't in the relation data on the first occurrence
+        # of relation-changed so we check for it here in order to prevent things
+        # from blowing up. Not much to do if we don't have it other than log
+        # and proceed.
+        if unit := event.unit:
+            unit_data = event.relation.data[unit]
+            if node_json := unit_data.get("node"):
+
+                try:
+                    node = json.loads(node_json)
+                except json.JSONDecodeError as e:
+                    logger.error(e)
+                    raise e
+
+                if node.get("new_node"):
+                    if node_config := node.get("node_parameters"):
+                        if node_name := node_config.get("NodeName"):
+                            self._charm.new_nodes = list(set(self._charm.new_nodes + [node_name]))
+                            self.on.slurmd_available.emit()
+            else:
+                logger.debug(f"`node` data does not exist for unit: {unit}.")
+        else:
+            logger.debug("Unit doesn't exist on the relation.")
+
+        self.on.partition_available.emit()
+
+    def _on_relation_departed(self, event: RelationDepartedEvent) -> None:
         """Handle hook when 1 unit departs."""
         self.on.slurmd_departed.emit()
 
-    def _on_relation_broken(self, event):
+    def _on_relation_broken(self, event: RelationBrokenEvent) -> None:
         """Clear the munge key and emit the event if the relation is broken."""
         if self.framework.model.unit.is_leader():
-            event.relation.data[self.model.app]["munge_key"] = ""
+            event.relation.data[self.model.app]["cluster_info"] = ""
+            self.on.partition_unavailable.emit()
 
-        # if there are other partitions, slurmctld needs to update the config
-        # only. If there are no other partitions, we set slurmd_available to
-        # False as well
-        if self._num_relations:
-            self.on.slurmd_available.emit()
-        else:
-            self._charm.set_slurmd_available(False)
-            self.on.slurmd_unavailable.emit()
-
-    @property
-    def _num_relations(self):
-        """Return the number of relations (number of slurmd applications)."""
-        return len(self._charm.framework.model.relations[self._relation_name])
-
-    @property
-    def is_joined(self):
-        """Return True if self._relation is not None."""
-        if self._charm.framework.model.relations.get(self._relation_name):
-            return True
-        else:
-            return False
-
-    def get_slurmd_info(self) -> list:
-        """Return the node info for units of applications on the relation."""
-        partitions = []
-        relations = self.framework.model.relations["slurmd"]
-
-        for relation in relations:
-            inventory = []
-
-            app = relation.app
-            units = relation.units
-            # check if this partition has at least one node before adding it to
-            # the list
-            if units:
-                if not relation.data.get(app):
-                    logger.debug(f"## Not app data in relation with {app}")
-                    return []
-                if not relation.data[app].get("partition_info"):
-                    logger.debug("## Not partition info data in relation")
-                    return []
-
-                partition_info = json.loads(relation.data[app].get("partition_info"))
-
-                for unit in units:
-                    inv = relation.data[unit].get("inventory")
-                    if inv:
-                        inventory.append(json.loads(inv))
-
-                partition_info["inventory"] = inventory.copy()
-                partitions.append(partition_info)
-
-        return ensure_unique_partitions(partitions)
-
-    def set_nhc_params(self, params: str = ""):
+    def set_nhc_params(self, params: str) -> None:
         """Send NHC parameters to all slurmd."""
         # juju does not allow setting empty data/strings on the relation data,
         # so we set it to something that behaves like empty
-        if not params or params == "":
-            params = "#"
-
         logger.debug(f"## set_nhc_params: {params}")
 
-        if self.is_joined:
-            relations = self._charm.framework.model.relations.get(self._relation_name)
+        if relations := self.framework.model.relations.get(self._relation_name):
             for relation in relations:
                 app = self.model.app
-                relation.data[app]["nhc_params"] = params
+                cluster_info = json.loads(relation.data[app]["cluster_info"])
+                cluster_info["nhc_params"] = params
+                relation.data[app]["cluster_info"] = json.dumps(cluster_info)
         else:
             logger.debug("## slurmd not joined")
 
+    def _get_partition_from_relation(self, relation: Relation) -> Dict[str, Any]:
+        """Get the partition from the relation."""
+        partition_as_dict = {}
+        if partition_as_json := relation.data[relation.app].get("partition"):
+            # Decode the json partition relation data.
+            try:
+                partition_as_dict = json.loads(partition_as_json)
+            except json.JSONDecodeError as e:
+                logger.error(e)
+                raise e
+        return partition_as_dict
 
-def ensure_unique_partitions(partitions):
-    """Return a list of unique partitions."""
-    # Ensure we have partitions with unique inventory only
-    #
-    # 1) Create a temp copy of the partitions list and iterate
-    # over it.
-    #
-    # 2) On each pass create a temp copy of the partition itself.
-    #
-    # 3) Get the inventory from the temp partition and iterate over it to
-    # ensure we have unique entries.
-    #
-    # 4) Add the unique inventory back to the temp partition and
-    # subsequently add the temp partition back to the original partitions
-    # list.
-    #
-    # 5) Return the list of partitions with unique inventory.
+    def _get_node_from_relation(self, relation: Relation, unit: Unit) -> Dict[str, Any]:
+        """Decode and return the node from the unit data on the relation."""
+        node_as_dict = {}
+        if node := relation.data[unit].get("node"):
+            # Load the node
+            try:
+                node_as_dict = json.loads(node)
+            except json.JSONDecodeError as e:
+                logger.error(e)
+                raise e
 
-    partitions_tmp = copy.deepcopy(partitions)
-    for partition in partitions_tmp:
-        partition_tmp = copy.deepcopy(partition)
-        partitions.remove(partition)
+        return node_as_dict
 
-        inventory = partition_tmp["inventory"]
+    def get_new_nodes_and_nodes_and_partitions(self) -> Dict[str, Any]:
+        """Return the new_nodes, nodes and partitions configuration.
 
-        unique_inventory = list({node["node_name"]: node for node in inventory}.values())
+        Iterate over the relation data to assemble the nodes, new_nodes
+        and partition configuration.
+        """
+        partitions = {}
+        nodes = {}
+        new_nodes = []
 
-        partition_tmp["inventory"] = unique_inventory
-        partitions.append(partition_tmp)
+        if relations := self.framework.model.relations.get(self._relation_name):
+            for relation in relations:
 
-    return partitions
+                partition_as_dict = self._get_partition_from_relation(relation)
+                # Account for the case where multiple slurmd applications relate at the same time.
+                # This eliminates the possibility of iterating over relations for joined slurmd
+                # applications who haven't yet set the 'partition' data on the relation.
+                if not partition_as_dict:
+                    continue
+
+                # partition_as_dict should only contain a single top level partition name.
+                # Iterate over partition_as_dict.items() as a convenience to get the partition_name
+                # and partition_parameters without having to find the key name and then index.
+                for partition_name, partition_parameters in partition_as_dict.items():
+
+                    partition_nodes = []
+                    for unit in relation.units:
+
+                        if node := self._get_node_from_relation(relation, unit):
+
+                            # Check that the data we expect to exist, exists.
+                            if node_config := node.get("node_parameters"):
+
+                                # Get the NodeName and append to the partition nodes
+                                node_name = node_config["NodeName"]
+                                partition_nodes.append(node_name)
+
+                                # Add this node config to the nodes dict.
+                                nodes[node_name] = {
+                                    k: v for k, v in node_config.items() if k not in ["NodeName"]
+                                }
+
+                                # Account for new node.
+                                if node.get("new_node"):
+                                    new_nodes.append(node_name)
+
+                    # Ensure we have a unique list and add it to the partition.
+                    partition_parameters["Nodes"] = list(set(partition_nodes))
+
+                    # Check for default partition.
+                    if self._charm.model.config.get("default-partition") == partition_name:
+                        partition_parameters["Default"] = "YES"
+
+                    partitions[partition_name] = partition_parameters
+
+        # If we have down nodes because they are new nodes, then set them here.
+        new_node_down_nodes = (
+            [{"DownNodes": list(set(new_nodes)), "State": "DOWN", "Reason": "New node."}]
+            if len(new_nodes) > 0
+            else []
+        )
+        return {"down_nodes": new_node_down_nodes, "nodes": nodes, "partitions": partitions}
