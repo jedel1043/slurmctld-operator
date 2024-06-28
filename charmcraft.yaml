@@ -29,8 +29,6 @@ requires:
     interface: slurmdbd
   slurmrestd:
     interface: slurmrestd
-  fluentbit:
-    interface: fluentbit
 
 assumes:
   - juju

@@ -9,8 +9,7 @@ import shlex
 import subprocess
 from typing import Any, Dict, List, Optional, Union
 
-from charms.fluentbit.v0.fluentbit import FluentbitClient
-from constants import CHARM_MAINTAINED_SLURM_CONF_PARAMETERS, FLUENTBIT_CONFIG, SLURM_CONF_PATH
+from constants import CHARM_MAINTAINED_SLURM_CONF_PARAMETERS, SLURM_CONF_PATH
 from interface_slurmd import (
     PartitionAvailableEvent,
     PartitionUnavailableEvent,
@@ -34,7 +33,6 @@ from ops import (
     CharmBase,
     ConfigChangedEvent,
     InstallEvent,
-    RelationCreatedEvent,
     StoredState,
     UpdateStatusEvent,
     WaitingStatus,
@@ -68,29 +66,21 @@ class SlurmctldCharm(CharmBase):
 
         self._slurmctld_manager = SlurmctldManager()
 
-        self._fluentbit = FluentbitClient(self, "fluentbit")
         self._slurmd = Slurmd(self, "slurmd")
         self._slurmdbd = Slurmdbd(self, "slurmdbd")
         self._slurmrestd = Slurmrestd(self, "slurmrestd")
 
         event_handler_bindings = {
-            # Charm lifecycle hook events
             self.on.install: self._on_install,
             self.on.update_status: self._on_update_status,
             self.on.config_changed: self._on_config_changed,
-            # slurmdbd lifecycle hook events
             self._slurmdbd.on.slurmdbd_available: self._on_slurmdbd_available,
             self._slurmdbd.on.slurmdbd_unavailable: self._on_slurmdbd_unavailable,
-            # slurmd lifecycle hook events
             self._slurmd.on.partition_available: self._on_write_slurm_conf,
             self._slurmd.on.partition_unavailable: self._on_write_slurm_conf,
             self._slurmd.on.slurmd_available: self._on_write_slurm_conf,
             self._slurmd.on.slurmd_departed: self._on_write_slurm_conf,
-            # slurmrestd available
             self._slurmrestd.on.slurmrestd_available: self._on_slurmrestd_available,
-            # fluentbit
-            self.on["fluentbit"].relation_created: self._on_fluentbit_relation_created,
-            # actions
             self.on.show_current_config_action: self._on_show_current_config_action,
             self.on.drain_action: self._on_drain_nodes_action,
             self.on.resume_action: self._on_resume_nodes_action,
@@ -172,11 +162,6 @@ class SlurmctldCharm(CharmBase):
         """Show current slurm.conf."""
         slurm_conf = SLURM_CONF_PATH.read_text()
         event.set_results({"slurm.conf": slurm_conf})
-
-    def _on_fluentbit_relation_created(self, event: RelationCreatedEvent) -> None:
-        """Set up Fluentbit log forwarding."""
-        logger.debug("## Configuring fluentbit")
-        self._fluentbit.configure(FLUENTBIT_CONFIG)
 
     def _on_slurmrestd_available(self, event: SlurmrestdAvailableEvent) -> None:
         """Check that we have slurm_config when slurmrestd available otherwise defer the event."""
