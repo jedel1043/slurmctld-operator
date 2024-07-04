@@ -15,6 +15,7 @@ from pwd import getpwnam
 import charms.operator_libs_linux.v0.apt as apt
 import charms.operator_libs_linux.v1.systemd as systemd
 import distro
+from charms.hpc_libs.v0.slurm_ops import Service, SlurmManager, SlurmManagerError
 from constants import SLURM_GROUP, SLURM_USER, UBUNTU_HPC_PPA_KEY
 from Crypto.PublicKey import RSA
 from slurm_conf_editor import slurm_conf_as_string
@@ -125,18 +126,17 @@ class SlurmctldManager:
     """SlurmctldManager."""
 
     def __init__(self):
+        self._manager = SlurmManager(Service.SLURMCTLD)
         self._munge_package = CharmedHPCPackageLifecycleManager("munge")
         self._slurmctld_package = CharmedHPCPackageLifecycleManager("slurmctld")
 
     def install(self) -> bool:
         """Install slurmctld and munge to the system."""
-        if self._slurmctld_package.install() is not True:
+        try:
+            self._manager.install()
+        except SlurmManagerError as e:
+            logger.error(f"Error installing Slurm snap. Reason: {e.message}")
             return False
-        systemd.service_stop("slurmctld")
-
-        if self._munge_package.install() is not True:
-            return False
-        systemd.service_stop("munge")
 
         spool_dir = Path("/var/spool/slurmctld")
         if not spool_dir.exists():
@@ -149,18 +149,19 @@ class SlurmctldManager:
 
     def version(self) -> str:
         """Return slurm version."""
-        return self._slurmctld_package.version()
+        return self._manager.version()
 
     def slurm_cmd(self, command, arg_string) -> None:
         """Run a slurm command."""
         try:
-            subprocess.call([f"{command}"] + arg_string.split())
+            subprocess.call([f"slurm.{command}"] + arg_string.split())
         except subprocess.CalledProcessError as e:
             raise (e)
             logger.error(f"Error running {command} - {e}")
 
     def write_slurm_conf(self, slurm_conf: dict) -> None:
         """Render the context to a template, adding in common configs."""
+        slurm_conf = {}
         slurm_user_uid, slurm_group_gid = _get_slurm_user_uid_and_slurm_group_gid()
 
         target = Path("/etc/slurm/slurm.conf")

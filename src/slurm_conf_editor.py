@@ -2,6 +2,8 @@
 
 import copy
 import textwrap
+import itertools
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -264,6 +266,10 @@ class Parameters:
         """Convert the parameters dict to slurm.conf parameters entries."""
         return "\n".join(f"{k}={v}" for k, v in vars(self).items() if v is not None)
 
+    def as_snap_conf_entries(self) -> Iterable[(str, str)]:
+        """Convert the parameters dict to Slurm snap config entries."""
+        return ((str(k), str(v)) for k, v in vars(self).items() if v is not None)
+
 
 @dataclass
 class Partition:
@@ -325,6 +331,10 @@ class Partition:
             + " ".join([f"{k}={v}" for k, v in partition_parameters.items() if v is not None])
         )
 
+    def as_snap_conf_entries(self) -> Iterable[(str, str)]:
+        """Return slurm.conf partition entry as Slurm snap config entries."""
+        return ((f"{self.PartitionName}.{k}", str(v)) for k, v in vars(self).items() if v is not None or k is not "PartitionName")
+
 
 @dataclass
 class Node:
@@ -357,6 +367,10 @@ class Node:
     def as_slurm_conf_entry(self) -> str:
         """Convert the node dict into slurm.conf entry."""
         return " ".join(f"{k}={v}" for k, v in vars(self).items() if v is not None)
+    
+    def as_snap_conf_entries(self) -> Iterable[(str, str)]:
+        """Convert the node dict into Slurm snap config entries."""
+        return ((str(k), str(v)) for k, v in vars(self).items() if v is not None)
 
 
 @dataclass
@@ -374,6 +388,10 @@ class DownNodes:
             f"State={self.State} "
             f'Reason="{self.Reason}"'
         )
+
+    def as_snap_conf_entries(self) -> Iterable[(str, str)]:
+        """Convert the down_nodes list into Slurm snap config entries."""
+        return ((str(k), str(v)) for k, v in vars(self).items() if v is not None)
 
 
 def slurm_conf_as_string(slurm_conf: dict) -> str:
@@ -410,4 +428,39 @@ def slurm_conf_as_string(slurm_conf: dict) -> str:
             "# DownNodes",
             "\n".join(down_node_entries),
         ]
+    )
+
+
+def slurm_conf_as_snap_conf(slurm_conf: dict) -> Mapping[str, str]:
+    """Return the slurm.conf as a mapping of snap configs."""
+    slurm_conf = copy.deepcopy(slurm_conf)
+
+    partition_entries = [("partition-name", "DEFAULT"), ("default", "YES")]
+
+    partitions = slurm_conf.pop("partitions")
+    if len(partitions) > 0:
+        partition_entries = (
+            entry
+            for partition in partitions
+            for entry in Partition(partition, **partitions[partition]).as_snap_conf_entries()
+        )
+
+    nodes = slurm_conf.pop("nodes")
+    node_entries = (
+        entry for node in nodes for entry in Node(node, **nodes[node]).as_snap_conf_entries()
+    )
+    down_nodes = slurm_conf.pop("down_nodes")
+    down_node_entries = (
+        entry
+        for down_node in down_nodes
+        for entry in DownNodes(**down_node).as_snap_conf_entries()
+    )
+
+    return dict(
+        itertools.chain(
+            Parameters(**slurm_conf).as_snap_conf_entries(),
+            partition_entries,
+            node_entries,
+            down_node_entries,
+        )
     )
