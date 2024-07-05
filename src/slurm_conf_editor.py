@@ -5,7 +5,7 @@ import textwrap
 import itertools
 from collections.abc import Iterable, Mapping, Iterator
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, TypeVar, Tuple
 
 SLURM_CONF_SECTION_SEPARATOR = """
 
@@ -465,37 +465,22 @@ def slurm_conf_as_snap_conf(slurm_conf: dict) -> Mapping[str, str]:
         )
     )
 
-def _doubles(input: str):
-    """Iterate the input string by doubles of chars."""
+T = TypeVar('T')
+
+def _peekable(items: Iterable[T]) -> Iterator[Tuple[T, Optional[T]]]:
+    """Iterate through the items, peeking the next item after the currently yielded item."""
     items_iter = iter(items)
     prev = next(items_iter, None)
 
     for item in items_iter:
         yield prev, item
         prev = item
-
-def _triples(input: str):
-    """Iterate the input string by triples of chars."""
-    items_iter = iter(items)
-    first = next(items_iter, None)
-    second = next(items_iter, None)
-
-    for item in items_iter:
-        yield first, second, item
-        first, second = second, item
-
-def _lower_upper(left: str, right: str) -> bool:
-    return left.islower() and right.isupper()
-
-def _acronym(left: str, middle: str, right: str) -> bool:
-    return left.isupper() and middle.isupper() and right.islower()
-
-def _find_splits(input:str) -> Iterator[int]:
-    doubles = map(_lower_upper, _doubles(input))
-    triples = map(_acronym, _triples(input))
+    
+    if prev is not None:
+        yield prev, None
 
 def _split_camel_case(input: str) -> Iterator[str]:
-    # Adapted from https://docs.rs/convert_case/latest/src/convert_case/segmentation.rs.html
+    # Adapted from https://docs.rs/heck/latest/src/heck/lib.rs.html
     """
     Split a CamelCase string into the list of its words.
 
@@ -505,5 +490,26 @@ def _split_camel_case(input: str) -> Iterator[str]:
     - Acronym rule: Two or more uppercase letters followed by a lowercase letter:
       "ABCThing" -> ["ABC", "Thing"]
     """
-    doubles = map(_lower_upper, _doubles(input))
-    triples = map(_acronym, _triples(input))
+    init = 0
+    prev_was_upper = False
+    for (i, curr), peek in _peekable(enumerate(input)):
+        if peek is None:
+            # No further word boundaries, so we can return now.
+            yield input[init:]
+            return
+        next_i, peek = peek
+
+        # Lower-upper rule
+        if curr.islower() and peek.isupper():
+            yield input[init:next_i]
+            init = next_i
+        # Acronym rule
+        elif prev_was_upper and curr.isupper() and peek.islower():
+            yield input[init:i]
+            init = i
+        prev_was_upper = curr.isupper()
+
+def _camel_case_to_kebab_case(input: str) -> str:
+    """Convert a CamelCase string into a kebab-case string."""
+    "-".join((s.lower() for s in _split_camel_case(input)))
+
