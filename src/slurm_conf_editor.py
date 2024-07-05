@@ -3,7 +3,7 @@
 import copy
 import textwrap
 import itertools
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Iterator
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -464,3 +464,46 @@ def slurm_conf_as_snap_conf(slurm_conf: dict) -> Mapping[str, str]:
             down_node_entries,
         )
     )
+
+def _doubles(input: str):
+    """Iterate the input string by doubles of chars."""
+    items_iter = iter(items)
+    prev = next(items_iter, None)
+
+    for item in items_iter:
+        yield prev, item
+        prev = item
+
+def _triples(input: str):
+    """Iterate the input string by triples of chars."""
+    items_iter = iter(items)
+    first = next(items_iter, None)
+    second = next(items_iter, None)
+
+    for item in items_iter:
+        yield first, second, item
+        first, second = second, item
+
+def _lower_upper(left: str, right: str) -> bool:
+    return left.islower() and right.isupper()
+
+def _acronym(left: str, middle: str, right: str) -> bool:
+    return left.isupper() and middle.isupper() and right.islower()
+
+def _find_splits(input:str) -> Iterator[int]:
+    doubles = map(_lower_upper, _doubles(input))
+    triples = map(_acronym, _triples(input))
+
+def _split_camel_case(input: str) -> Iterator[str]:
+    # Adapted from https://docs.rs/convert_case/latest/src/convert_case/segmentation.rs.html
+    """
+    Split a CamelCase string into the list of its words.
+
+    The input is only split using the lower-upper rule and the acronym rule:
+    - Lower-upper rule: a lowercase letter followed by an uppercase letter:
+      "oneThing" -> ["one", "Thing"]
+    - Acronym rule: Two or more uppercase letters followed by a lowercase letter:
+      "ABCThing" -> ["ABC", "Thing"]
+    """
+    doubles = map(_lower_upper, _doubles(input))
+    triples = map(_acronym, _triples(input))
